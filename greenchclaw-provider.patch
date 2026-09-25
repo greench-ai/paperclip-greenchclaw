@@ -126,3 +126,152 @@ index 88466b5..4b5242e 100644
    if ((provider === "openai" || provider === "xai") && !loginHome)
      throw unprocessable("Start a separate local sign-in for this connection before connecting.");
    try {
+diff --git a/ui/src/components/ai-connections/AiConnectionAuth.tsx b/ui/src/components/ai-connections/AiConnectionAuth.tsx
+index 3e03b4e..73dae6f 100644
+--- a/ui/src/components/ai-connections/AiConnectionAuth.tsx
++++ b/ui/src/components/ai-connections/AiConnectionAuth.tsx
+@@ -54,8 +54,7 @@ function AuthAttempt({
+   const busy = state.phase === "starting" || state.phase === "submitting";
+   const unsupported =
+     state.phase === "unsupported" ||
+-    (method === "subscription" && !info.subscriptionName);
+-  const submit = () => {
++    (method === "subscription" && !info.subscriptionName);  const submit = () => {
+     if (!value.trim() || busy) return;
+     const submitted = value.trim();
+     setValue("");
+@@ -99,13 +98,17 @@ function AuthAttempt({
+                   Sign-in cancelled. No connection was created.
+                 </p>
+               )}
+-              {method === "api_key" ? (
++              {method === "api_key" || method === "gateway" ? (
+                 <ProviderApiKeyCard
+                   providerName={info.name}
+                   value={value}
+                   onChange={setValue}
+                   onSubmit={submit}
+-                  placeholder="Enter API key here"
++                  placeholder={
++                    method === "gateway"
++                      ? "Paste the GreenchClaw gateway token"
++                      : "Enter API key here"
++                  }
+                   disabled={busy}
+                   autoFocus
+                 />
+@@ -159,7 +162,7 @@ function AuthAttempt({
+               Cancel
+             </Button>
+             {!unsupported &&
+-              (method === "api_key" ? (
++              (method === "api_key" || method === "gateway" ? (
+                 <Button disabled={busy || !value.trim()} onClick={submit}>
+                   {busy ? "Connecting…" : "Connect"}
+                 </Button>
+diff --git a/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx b/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx
+index ceaada9..e3d77e5 100644
+--- a/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx
++++ b/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx
+@@ -30,7 +30,10 @@ type Props = {
+ 
+ /** Connections hosts the same provider step as agent setup, with its own save intent. */
+ export function AiConnectionCredentialStep(props: Props) {
+-  if (props.provider === "openrouter") return <ApiKeyConnectionStep {...props} />;
++  // OpenRouter and self-hosted gateway providers (GreenchClaw) connect with a
++  // token/API key, not a vendor subscription sign-in.
++  if (props.provider === "openrouter" || props.provider === "greenchclaw")
++    return <ApiKeyConnectionStep {...props} />;
+   return <SubscriptionConnectionStep {...props} />;
+ }
+ 
+@@ -99,15 +102,19 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
+   const [name, setName] = useState(initialName);
+   const [apiKey, setApiKey] = useState("");
+   const client = useQueryClient();
++  // Self-hosted gateway providers (GreenchClaw) use the `gateway` method; their
++  // token rides in the same field an API key uses.
++  const method: AiAuthMethod = provider === "greenchclaw" ? "gateway" : "api_key";
++  const providerLabel = provider === "greenchclaw" ? "GreenchClaw" : "OpenRouter";
+   const save = useMutation({
+-    mutationFn: () => aiConnectionsApi.create(companyId, { provider, method: "api_key", name, ownership, agentIds, allAgents, connectionId, apiKey }),
+-    onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method: "api_key" }); },
++    mutationFn: () => aiConnectionsApi.create(companyId, { provider, method, name, ownership, agentIds, allAgents, connectionId, apiKey }),
++    onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method }); },
+     onSettled: () => setApiKey(""),
+   });
+   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
+     <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
+     {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
+-    <ProviderApiKeyCard providerName="OpenRouter" value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" autoFocus />
++    <ProviderApiKeyCard providerName={providerLabel} value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder={provider === "greenchclaw" ? "Paste the GreenchClaw gateway token" : "Enter API key here"} autoFocus />
+     <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!name.trim() || !apiKey.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
+   </div>;
+ }
+diff --git a/ui/src/components/ai-connections/AiConnectionField.tsx b/ui/src/components/ai-connections/AiConnectionField.tsx
+index 5533cf3..5308e42 100644
+--- a/ui/src/components/ai-connections/AiConnectionField.tsx
++++ b/ui/src/components/ai-connections/AiConnectionField.tsx
+@@ -30,6 +30,7 @@ export function aiProviderForAdapter(
+       codex_local: "openai",
+       opencode_local: "openrouter",
+       grok_local: "xai",
++      openclaw_gateway: "greenchclaw",
+     } as Record<string, AiProvider>
+   )[adapterType];
+ }
+diff --git a/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx b/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx
+index ede259e..ce8a580 100644
+--- a/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx
++++ b/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx
+@@ -15,8 +15,8 @@ export function ManagedAiConnectionRow({
+ }) {
+   const metadata = connection.config?.ai as
+     | {
+-        provider: "anthropic" | "openai" | "openrouter" | "xai";
+-        method: "subscription" | "api_key";
++        provider: "anthropic" | "openai" | "openrouter" | "xai" | "greenchclaw";
++        method: "subscription" | "api_key" | "gateway";
+       }
+     | undefined;
+   if (!metadata) return null;
+diff --git a/ui/src/components/ai-connections/model.ts b/ui/src/components/ai-connections/model.ts
+index 4d1c691..de4d022 100644
+--- a/ui/src/components/ai-connections/model.ts
++++ b/ui/src/components/ai-connections/model.ts
+@@ -23,6 +23,10 @@ export const AI_PROVIDERS: Record<
+     subscriptionName: "Grok subscription",
+     logo: "/brands/adapters/grok.svg",
+   },
++  greenchclaw: {
++    name: "GreenchClaw",
++    logo: "/brands/adapters/openclaw.svg",
++  },
+ };
+ 
+ export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };
+@@ -41,6 +45,7 @@ export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
+ };
+ 
+ export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
++  if (method === "gateway") return "Gateway token";
+   return method === "subscription"
+     ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
+     : "API key";
+diff --git a/ui/src/components/new-agent/AgentProviderConnection.tsx b/ui/src/components/new-agent/AgentProviderConnection.tsx
+index 137adf3..0e8eec8 100644
+--- a/ui/src/components/new-agent/AgentProviderConnection.tsx
++++ b/ui/src/components/new-agent/AgentProviderConnection.tsx
+@@ -57,10 +57,10 @@ export function AgentProviderConnection({
+   /** Connections supplies its access intent; presentation and login controllers stay shared. */
+   managedAccount?: {
+     intent: AiConnectionLoginIntent;
+-    initialMethod?: "subscription" | "api_key";
++    initialMethod?: "subscription" | "api_key" | "gateway";
+     fixedMethod?: boolean;
+     disabled?: boolean;
+-    onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
++    onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" | "gateway" }) => void;
+   };
+ }) {
+   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });

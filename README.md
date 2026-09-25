@@ -79,3 +79,27 @@ a search/replace that assumes source style silently misses.
 - Agents need `~/.openclaw/workspace/paperclip-claimed-api-key.json` (from
   `paperclipai token agent create`) to call back into Paperclip's API — without
   it, heartbeats connect but the task flow 401s.
+
+---
+
+## Onboarding integration (added 2026-09-25)
+
+The patch also wires GreenchClaw into Paperclip's **agent onboarding**: choosing a
+GreenchClaw/gateway agent offers a "Connect GreenchClaw" step that asks for the
+gateway token — no Claude/OpenAI sign-in required.
+
+UI changes:
+- `ui/src/components/ai-connections/model.ts` — provider label + `Gateway token` method label
+- `ui/src/components/ai-connections/AiConnectionAuth.tsx` — token card for the `gateway` method
+- `ui/src/components/ai-connections/AiConnectionCredentialStep.tsx` — `greenchclaw` uses the token step, saves with `method: "gateway"`
+- `ui/src/components/ai-connections/AiConnectionField.tsx` — `aiProviderForAdapter` maps `openclaw_gateway → greenchclaw` (this is what makes onboarding auto-select it)
+- `ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx` — accept the new provider/method in the row view
+- `ui/src/components/new-agent/AgentProviderConnection.tsx` — widen method unions to include `gateway`
+
+## What still needs upstream (honest scope)
+
+This is a **fork patch**, not an upstream release. A clean upstream contribution
+would need the provider list, capabilities table, and validation relaxed to be
+data-driven rather than a 4-entry literal. As shipped here it's a working,
+verified integration; the "pick any connector, nothing forced" wizard goal is
+met for GreenchClaw specifically.
