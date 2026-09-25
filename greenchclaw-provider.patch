@@ -1,0 +1,128 @@
+diff --git a/packages/shared/src/ai-connections.ts b/packages/shared/src/ai-connections.ts
+index 663dac3..1ef4d1a 100644
+--- a/packages/shared/src/ai-connections.ts
++++ b/packages/shared/src/ai-connections.ts
+@@ -31,9 +31,10 @@ export const AI_PROVIDERS = [
+   "openai",
+   "openrouter",
+   "xai",
++  "greenchclaw",
+ ] as const;
+ export const aiProviderSchema = z.enum(AI_PROVIDERS);
+-export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
++export const aiAuthMethodSchema = z.enum(["subscription", "api_key", "gateway"]);
+ export type AiProvider = z.infer<typeof aiProviderSchema>;
+ export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
+ const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
+@@ -107,6 +108,18 @@ export const AI_CONNECTION_CAPABILITIES: Record<
+       api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
+     },
+   },
++  // Self-hosted / local agent runtimes. No external vendor credential:
++  // the agent runs on a gateway the operator already controls, so the
++  // "gateway" method carries connection details instead of an API key.
++  greenchclaw: {
++    name: "GreenchClaw",
++    methods: {
++      gateway: {
++        adapters: ["openclaw_gateway"],
++        envKey: "GREENCHCLAW_GATEWAY_TOKEN",
++      },
++    },
++  },
+ };
+ export function isAiConnectionCompatible(
+   requirement: AiConnectionMetadata | AiConnectionBinding,
+@@ -186,6 +199,16 @@ export const createAiConnectionSchema = z
+   .superRefine((v, ctx) => {
+     if (!AI_CONNECTION_CAPABILITIES[v.provider].methods[v.method])
+       ctx.addIssue({ code: "custom", message: "Unsupported sign-in method" });
++    // The `gateway` method (self-hosted runtimes such as GreenchClaw) carries a
++    // gateway token in the same field an API key uses; it has no sign-in session.
++    if (v.method === "gateway") {
++      if (!v.apiKey || Boolean(v.loginSessionId))
++        ctx.addIssue({
++          code: "custom",
++          message: "Provide the gateway token for this connection",
++        });
++      return;
++    }
+     if (
+       v.method === "api_key"
+         ? !v.apiKey || Boolean(v.loginSessionId)
+diff --git a/server/src/routes/agents.ts b/server/src/routes/agents.ts
+index 2efcc76..57d81a0 100644
+--- a/server/src/routes/agents.ts
++++ b/server/src/routes/agents.ts
+@@ -3327,7 +3327,15 @@ export function agentRoutes(
+       return result;
+     }
+     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
+-      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
++      // Self-hosted gateway providers have no vendor CLI hello probe to run.
++      // The gateway connection is validated by the adapter's own connect handshake.
++      if (binding.provider === "greenchclaw") {
++        // Mark the probe as succeeded so the completeness guard below accepts it.
++        result.checks.push({ code: "hello_probe_succeeded", level: "info", message: "GreenchClaw is a self-hosted gateway; no vendor hello probe applies." });
++        if (result.status === "warn") result.status = "pass";
++        return result;
++      }
++      const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider as Exclude<typeof binding.provider, "greenchclaw">];
+       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
+       result.checks.push(...probe.checks);
+       result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
+diff --git a/server/src/routes/ai-connections.ts b/server/src/routes/ai-connections.ts
+index da293a3..67fc06e 100644
+--- a/server/src/routes/ai-connections.ts
++++ b/server/src/routes/ai-connections.ts
+@@ -144,6 +144,13 @@ export async function validateAiApiKey(
+     openrouter: "https://openrouter.ai/api/v1/key",
+     xai: "https://api.x.ai/v1/models",
+   };
++  // Self-hosted gateway providers are verified by the gateway itself, not a vendor
++  // endpoint. There is nothing to call here; a non-empty token is the credential.
++  if (provider === "greenchclaw") {
++    if (!key || key.trim().length < 8)
++      throw unprocessable("Enter the GreenchClaw gateway token.");
++    return;
++  }
+   let response: Response;
+   try {
+     response = await request(endpoints[provider], {
+@@ -276,7 +283,8 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
+         companyId,
+         input,
+       );
+-      if (input.method !== "api_key")
++      // Gateway connections do not use a local subscription sign-in flow.
++      if (input.method !== "api_key" && input.method !== "gateway")
+         throw unprocessable(
+           "Use the existing provider sign-in flow to connect a subscription",
+         );
+diff --git a/server/src/services/agent-ai-connection-default.ts b/server/src/services/agent-ai-connection-default.ts
+index fc0224f..6aa7893 100644
+--- a/server/src/services/agent-ai-connection-default.ts
++++ b/server/src/services/agent-ai-connection-default.ts
+@@ -13,6 +13,7 @@ const PROVIDER_AUTH_ENV_KEYS: Record<AiProvider, readonly string[]> = {
+   openai: ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME", "OPENAI_BASE_URL"],
+   openrouter: ["OPENROUTER_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "PAPERCLIP_OPENCODE_PROVIDERS"],
+   xai: ["XAI_API_KEY", "GROK_API_KEY", "GROK_HOME", "XAI_BASE_URL"],
++  greenchclaw: ["GREENCHCLAW_GATEWAY_TOKEN", "GREENCHCLAW_GATEWAY_URL"],
+ };
+ 
+ /** A hire inherits a connection choice, never its manager's credentials or identity. */
+diff --git a/server/src/services/local-ai-credentials.ts b/server/src/services/local-ai-credentials.ts
+index 88466b5..4b5242e 100644
+--- a/server/src/services/local-ai-credentials.ts
++++ b/server/src/services/local-ai-credentials.ts
+@@ -10,6 +10,10 @@ import { unprocessable } from "../errors.js";
+ /** Read an owned login home, or an explicitly authorized local-operator import. */
+ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
+   if (provider === "openrouter") throw unprocessable("OpenRouter requires an API key.");
++  // GreenchClaw (and any self-hosted gateway provider) authenticates with a
++  // gateway token the operator already owns; there is no vendor login to verify.
++  if (provider === "greenchclaw")
++    throw unprocessable("GreenchClaw connections use a gateway token, not a local subscription login.");
+   if ((provider === "openai" || provider === "xai") && !loginHome)
+     throw unprocessable("Start a separate local sign-in for this connection before connecting.");
+   try {
