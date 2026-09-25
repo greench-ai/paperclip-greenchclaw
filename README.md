@@ -103,3 +103,13 @@ would need the provider list, capabilities table, and validation relaxed to be
 data-driven rather than a 4-entry literal. As shipped here it's a working,
 verified integration; the "pick any connector, nothing forced" wizard goal is
 met for GreenchClaw specifically.
+
+---
+
+## Upstream PR
+
+This patch was submitted upstream as **paperclipai/paperclip#14006** —
+"feat(ai-connections): support self-hosted providers (Ollama, GreenchClaw)".
+12 files, +119/-19. Also adds **Ollama** (local, no credential) alongside GreenchClaw.
+
+Branch: `greench-ai:feat/self-hosted-ai-connections`.
