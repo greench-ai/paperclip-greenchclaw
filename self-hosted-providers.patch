@@ -1,13 +1,14 @@
 diff --git a/packages/shared/src/ai-connections.ts b/packages/shared/src/ai-connections.ts
-index 663dac3..32c31ea 100644
+index 663dac3..61706d0 100644
 --- a/packages/shared/src/ai-connections.ts
 +++ b/packages/shared/src/ai-connections.ts
-@@ -31,9 +31,11 @@ export const AI_PROVIDERS = [
+@@ -31,9 +31,12 @@ export const AI_PROVIDERS = [
    "openai",
    "openrouter",
    "xai",
 +  "greenchclaw",
 +  "ollama",
++  "ollama_cloud",
  ] as const;
  export const aiProviderSchema = z.enum(AI_PROVIDERS);
 -export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
@@ -15,7 +16,7 @@ index 663dac3..32c31ea 100644
  export type AiProvider = z.infer<typeof aiProviderSchema>;
  export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
  const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
-@@ -100,6 +102,17 @@ export const AI_CONNECTION_CAPABILITIES: Record<
+@@ -100,6 +103,28 @@ export const AI_CONNECTION_CAPABILITIES: Record<
        api_key: { adapters: ["opencode_local"], envKey: "OPENROUTER_API_KEY" },
      },
    },
@@ -30,10 +31,21 @@ index 663dac3..32c31ea 100644
 +      },
 +    },
 +  },
++  // Ollama's hosted service (ollama.com). Same harness, but authenticated with
++  // an API key rather than a local endpoint.
++  ollama_cloud: {
++    name: "Ollama Cloud",
++    methods: {
++      api_key: {
++        adapters: ["opencode_local"],
++        envKey: "OLLAMA_API_KEY",
++      },
++    },
++  },
    xai: {
      name: "Grok",
      methods: {
-@@ -107,6 +120,18 @@ export const AI_CONNECTION_CAPABILITIES: Record<
+@@ -107,6 +132,18 @@ export const AI_CONNECTION_CAPABILITIES: Record<
        api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
      },
    },
@@ -52,18 +64,20 @@ index 663dac3..32c31ea 100644
  };
  export function isAiConnectionCompatible(
    requirement: AiConnectionMetadata | AiConnectionBinding,
-@@ -132,7 +157,9 @@ export function isAiConnectionCompatible(
+@@ -132,7 +169,11 @@ export function isAiConnectionCompatible(
    return (
      candidates.some((method) => method?.adapters.includes(adapterType)) &&
      (requirement.provider !== "openrouter" ||
 -      (typeof model === "string" && model.startsWith("openrouter/")))
 +      (typeof model === "string" && model.startsWith("openrouter/"))) &&
 +    (requirement.provider !== "ollama" ||
++      (typeof model === "string" && model.startsWith("ollama/"))) &&
++    (requirement.provider !== "ollama_cloud" ||
 +      (typeof model === "string" && model.startsWith("ollama/")))
    );
  }
  export type AiConnectionUnavailableReason =
-@@ -186,6 +213,25 @@ export const createAiConnectionSchema = z
+@@ -186,6 +227,25 @@ export const createAiConnectionSchema = z
    .superRefine((v, ctx) => {
      if (!AI_CONNECTION_CAPABILITIES[v.provider].methods[v.method])
        ctx.addIssue({ code: "custom", message: "Unsupported sign-in method" });
@@ -111,12 +125,14 @@ index 2efcc76..3c029f9 100644
        result.checks.push(...probe.checks);
        result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
 diff --git a/server/src/routes/ai-connections.ts b/server/src/routes/ai-connections.ts
-index da293a3..89feba4 100644
+index da293a3..6acc4d4 100644
 --- a/server/src/routes/ai-connections.ts
 +++ b/server/src/routes/ai-connections.ts
-@@ -144,6 +144,15 @@ export async function validateAiApiKey(
+@@ -143,7 +143,17 @@ export async function validateAiApiKey(
+     openai: "https://api.openai.com/v1/models",
      openrouter: "https://openrouter.ai/api/v1/key",
      xai: "https://api.x.ai/v1/models",
++    ollama_cloud: "https://ollama.com/api/tags",
    };
 +  // Self-hosted gateway providers are verified by the gateway itself, not a vendor
 +  // endpoint. There is nothing to call here; a non-empty token is the credential.
@@ -130,7 +146,7 @@ index da293a3..89feba4 100644
    let response: Response;
    try {
      response = await request(endpoints[provider], {
-@@ -276,7 +285,8 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
+@@ -276,7 +286,8 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
          companyId,
          input,
        );
@@ -141,15 +157,16 @@ index da293a3..89feba4 100644
            "Use the existing provider sign-in flow to connect a subscription",
          );
 diff --git a/server/src/services/agent-ai-connection-default.ts b/server/src/services/agent-ai-connection-default.ts
-index fc0224f..7b504a7 100644
+index fc0224f..ff20aff 100644
 --- a/server/src/services/agent-ai-connection-default.ts
 +++ b/server/src/services/agent-ai-connection-default.ts
-@@ -13,6 +13,8 @@ const PROVIDER_AUTH_ENV_KEYS: Record<AiProvider, readonly string[]> = {
+@@ -13,6 +13,9 @@ const PROVIDER_AUTH_ENV_KEYS: Record<AiProvider, readonly string[]> = {
    openai: ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME", "OPENAI_BASE_URL"],
    openrouter: ["OPENROUTER_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "PAPERCLIP_OPENCODE_PROVIDERS"],
    xai: ["XAI_API_KEY", "GROK_API_KEY", "GROK_HOME", "XAI_BASE_URL"],
 +  greenchclaw: ["GREENCHCLAW_GATEWAY_TOKEN", "GREENCHCLAW_GATEWAY_URL"],
 +  ollama: ["OLLAMA_BASE_URL", "OLLAMA_HOST", "OLLAMA_API_KEY"],
++  ollama_cloud: ["OLLAMA_API_KEY"],
  };
  
  /** A hire inherits a connection choice, never its manager's credentials or identity. */
@@ -214,7 +231,7 @@ index 3e03b4e..73dae6f 100644
                    {busy ? "Connecting…" : "Connect"}
                  </Button>
 diff --git a/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx b/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx
-index ceaada9..d4bf250 100644
+index ceaada9..11a1d74 100644
 --- a/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx
 +++ b/ui/src/components/ai-connections/AiConnectionCredentialStep.tsx
 @@ -30,7 +30,10 @@ type Props = {
@@ -224,12 +241,12 @@ index ceaada9..d4bf250 100644
 -  if (props.provider === "openrouter") return <ApiKeyConnectionStep {...props} />;
 +  // OpenRouter and self-hosted providers (GreenchClaw, Ollama) connect with a
 +  // token/endpoint, not a vendor subscription sign-in.
-+  if (props.provider === "openrouter" || props.provider === "greenchclaw" || props.provider === "ollama")
++  if (props.provider === "openrouter" || props.provider === "greenchclaw" || props.provider === "ollama" || props.provider === "ollama_cloud")
 +    return <ApiKeyConnectionStep {...props} />;
    return <SubscriptionConnectionStep {...props} />;
  }
  
-@@ -99,15 +102,25 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
+@@ -99,15 +102,28 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
    const [name, setName] = useState(initialName);
    const [apiKey, setApiKey] = useState("");
    const client = useQueryClient();
@@ -238,7 +255,10 @@ index ceaada9..d4bf250 100644
 +  const method: AiAuthMethod =
 +    provider === "greenchclaw" ? "gateway" : provider === "ollama" ? "local" : "api_key";
 +  const providerLabel =
-+    provider === "greenchclaw" ? "GreenchClaw" : provider === "ollama" ? "Ollama (local)" : "OpenRouter";
++    provider === "greenchclaw" ? "GreenchClaw"
++    : provider === "ollama" ? "Ollama (local)"
++    : provider === "ollama_cloud" ? "Ollama Cloud"
++    : "OpenRouter";
    const save = useMutation({
 -    mutationFn: () => aiConnectionsApi.create(companyId, { provider, method: "api_key", name, ownership, agentIds, allAgents, connectionId, apiKey }),
 -    onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method: "api_key" }); },
@@ -254,7 +274,7 @@ index ceaada9..d4bf250 100644
 +    {method === "local" ? (
 +      <p className="text-sm text-muted-foreground">Ollama runs locally — no credential needed. Make sure <code>adapterConfig.model</code> uses an <code>ollama/…</code> model id.</p>
 +    ) : (
-+      <ProviderApiKeyCard providerName={providerLabel} value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder={provider === "greenchclaw" ? "Paste the GreenchClaw gateway token" : "Enter API key here"} autoFocus />
++      <ProviderApiKeyCard providerName={providerLabel} value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder={provider === "greenchclaw" ? "Paste the GreenchClaw gateway token" : provider === "ollama_cloud" ? "Paste your ollama.com API key" : "Enter API key here"} autoFocus />
 +    )}
 +    <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!name.trim() || (method !== "local" && !apiKey.trim()) || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
    </div>;
@@ -273,7 +293,7 @@ index 5533cf3..674977e 100644
    )[adapterType];
  }
 diff --git a/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx b/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx
-index ede259e..e9eddc3 100644
+index ede259e..38f08a4 100644
 --- a/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx
 +++ b/ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx
 @@ -15,8 +15,8 @@ export function ManagedAiConnectionRow({
@@ -282,16 +302,16 @@ index ede259e..e9eddc3 100644
      | {
 -        provider: "anthropic" | "openai" | "openrouter" | "xai";
 -        method: "subscription" | "api_key";
-+        provider: "anthropic" | "openai" | "openrouter" | "xai" | "greenchclaw" | "ollama";
++        provider: "anthropic" | "openai" | "openrouter" | "xai" | "greenchclaw" | "ollama" | "ollama_cloud";
 +        method: "subscription" | "api_key" | "gateway" | "local";
        }
      | undefined;
    if (!metadata) return null;
 diff --git a/ui/src/components/ai-connections/model.ts b/ui/src/components/ai-connections/model.ts
-index 4d1c691..b9d6eb9 100644
+index 4d1c691..be83466 100644
 --- a/ui/src/components/ai-connections/model.ts
 +++ b/ui/src/components/ai-connections/model.ts
-@@ -23,6 +23,14 @@ export const AI_PROVIDERS: Record<
+@@ -23,6 +23,18 @@ export const AI_PROVIDERS: Record<
      subscriptionName: "Grok subscription",
      logo: "/brands/adapters/grok.svg",
    },
@@ -303,10 +323,14 @@ index 4d1c691..b9d6eb9 100644
 +    name: "Ollama (local)",
 +    logo: "/brands/adapters/ollama.svg",
 +  },
++  ollama_cloud: {
++    name: "Ollama Cloud",
++    logo: "/brands/adapters/ollama.svg",
++  },
  };
  
  export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };
-@@ -41,6 +49,8 @@ export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
+@@ -41,6 +53,8 @@ export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
  };
  
  export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {

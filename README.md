@@ -110,6 +110,6 @@ met for GreenchClaw specifically.
 
 This patch was submitted upstream as **paperclipai/paperclip#14006** —
 "feat(ai-connections): support self-hosted providers (Ollama, GreenchClaw)".
-12 files, +119/-19. Also adds **Ollama** (local, no credential) alongside GreenchClaw.
+12 files, +119/-19. Adds **Ollama (local, no credential)** and **Ollama Cloud (ollama.com API key)** alongside GreenchClaw.
 
 Branch: `greench-ai:feat/self-hosted-ai-connections`.
